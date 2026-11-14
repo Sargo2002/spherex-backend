@@ -1,4 +1,4 @@
-"""SPHEREx SkyFlow backend: real SPHEREx data from NASA/IPAC IRSA (QR2 spectral images)."""
+"""SPHEREx SkyFlow backend: real SPHEREx data from NASA/IPAC IRSA (QR3 deep spectral images)."""
 import base64, io, os, sqlite3, time
 from urllib.parse import urlparse
 
@@ -27,7 +27,10 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 DB = os.environ.get("DB_PATH", "spherex_live.db")
-COLLECTION = "spherex_qr2"
+
+# 🔴 পরিবর্তন ১: QR2 থেকে QR3 Deep এ আপডেট করা হলো (এখানে ছবি বেশি পাওয়া যাবে)
+COLLECTION = "spherex_qr3_deep" 
+
 OUT_PX = 220
 _cache = {}
 
@@ -48,7 +51,7 @@ def err(msg, code=400):
 def index():
     return jsonify({
         "status": "SPHEREx SkyFlow API is live",
-        "source": "NASA/IPAC IRSA — spherex_qr2",
+        "source": "NASA/IPAC IRSA — spherex_qr3_deep",
         "endpoints": [
             "/api/resolve?name=... or ?ra=...&dec=...",
             "/api/observations?ra=...&dec=...&fov=3&array=all&limit=12",
@@ -81,7 +84,10 @@ def observations():
         ra, dec = float(request.args["ra"]), float(request.args["dec"])
         fov = float(request.args.get("fov", 3))
         array = request.args.get("array", "all")
-        limit = min(int(request.args.get("limit", 12)), 40)
+        
+        # 🔴 পরিবর্তন ২: লিমিট ৪০ থেকে বাড়িয়ে ১০০ করা হলো (বেশি ছবি পাওয়ার জন্য)
+        limit = min(int(request.args.get("limit", 12)), 100) 
+        
         key = (round(ra, 4), round(dec, 4), round(fov, 1))
         if key in _cache and time.time() - _cache[key][0] < 900:
             rows = _cache[key][1]
@@ -91,7 +97,6 @@ def observations():
             try:
                 tab = Irsa.query_sia(pos=(coord, radius * u.deg), collection=COLLECTION)
             except Exception:
-                # Proxy বাইপাস করে সরাসরি রিকোয়েস্ট পাঠানো হচ্ছে
                 resp = requests.get("https://irsa.ipac.caltech.edu/SIA", timeout=60, params={
                     "COLLECTION": COLLECTION, "POS": f"circle {ra} {dec} {radius}", "RESPONSEFORMAT": "votable"},
                     proxies={"http": None, "https": None})
@@ -127,7 +132,6 @@ def cutout():
         ra, dec = float(request.args["ra"]), float(request.args["dec"])
         fov = float(request.args["fov"])
         size_deg = fov / 60 * 1.6
-        # Proxy বাইপাস করে সরাসরি রিকোয়েস্ট পাঠানো হচ্ছে
         r = requests.get(url.split("?")[0], params={"center": f"{ra},{dec}", "size": f"{size_deg}"}, timeout=90, 
                          proxies={"http": None, "https": None})
         r.raise_for_status()

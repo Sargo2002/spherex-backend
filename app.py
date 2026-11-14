@@ -1,8 +1,7 @@
-"""SPHEREx SkyFlow backend: real SPHEREx data from NASA/IPAC IRSA (QR3 spectral images)."""
+"""SPHEREx SkyFlow backend: real SPHEREx data from NASA/IPAC IRSA."""
 import base64, io, os, sqlite3, time
 from urllib.parse import urlparse
 
-# Render-Proxy সমস্যা সমাধানের জন্য
 os.environ['NO_PROXY'] = 'irsa.ipac.caltech.edu'
 os.environ['no_proxy'] = 'irsa.ipac.caltech.edu'
 
@@ -15,7 +14,6 @@ from astropy.io.votable import parse_single_table
 from astropy.time import Time
 from astropy.visualization import AsinhStretch, ZScaleInterval
 from astropy.wcs import WCS
-from astroquery.ipac.irsa import Irsa
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from PIL import Image
@@ -25,7 +23,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 DB = os.environ.get("DB_PATH", "spherex_live.db")
-COLLECTION = "spherex_qr3"  # নতুন আপডেট করা কালেকশন
+COLLECTION = "spherex_qr3"  
 OUT_PX = 220                        
 _cache = {}                         
 
@@ -41,11 +39,7 @@ def err(msg, code=400):
 
 @app.route("/")
 def index():
-    return jsonify({
-        "status": "SPHEREx SkyFlow API is live",
-        "source": "NASA/IPAC IRSA — spherex_qr3",
-        "endpoints": ["/api/resolve", "/api/observations", "/api/cutout", "/api/log-anomaly", "/api/get-logs"]
-    })
+    return jsonify({"status": "SPHEREx SkyFlow API is live", "source": "NASA/IPAC IRSA"})
 
 @app.route("/api/resolve")
 def resolve():
@@ -70,8 +64,8 @@ def observations():
         array = request.args.get("array", "all")
         limit = min(int(request.args.get("limit", 12)), 40)
         
-        # সার্চ এরিয়া একটু বাড়ানো হলো যাতে ছবি পাওয়া নিশ্চিত হয়
-        radius = max(fov / 60.0, 0.1) 
+        # সার্চ এরিয়া 0.3 ডিগ্রি করা হলো (আশেপাশের ছবি পাওয়ার জন্য)
+        radius = max(fov / 60.0, 0.3) 
         
         params = {
             "COLLECTION": COLLECTION,
@@ -79,7 +73,8 @@ def observations():
             "RESPONSEFORMAT": "votable"
         }
         
-        resp = requests.get("https://irsa.ipac.caltech.edu/SIA", params=params, timeout=90)
+        # টাইমআউট বাড়িয়ে 180 সেকেন্ড করা হলো
+        resp = requests.get("https://irsa.ipac.caltech.edu/SIA", params=params, timeout=180)
         resp.raise_for_status()
         
         tab = parse_single_table(io.BytesIO(resp.content)).to_table()
@@ -116,30 +111,19 @@ def observations():
 def cutout():
     try:
         url = request.args["url"]
-        if urlparse(url).hostname != "irsa.ipac.caltech.edu":
-            return err("Only IRSA URLs are allowed")
-        
         ra, dec = float(request.args["ra"]), float(request.args["dec"])
         fov = float(request.args["fov"])
         size_deg = fov / 60 * 1.5 
         
-        r = requests.get(url.split("?")[0], params={"center": f"{ra},{dec}", "size": f"{size_deg}"}, timeout=90)
+        # টাইমআউট বাড়িয়ে 300 সেকেন্ড (৫ মিনিট) করা হলো
+        r = requests.get(url.split("?")[0], params={"center": f"{ra},{dec}", "size": f"{size_deg}"}, timeout=300)
         r.raise_for_status()
         
         with fits.open(io.BytesIO(r.content)) as h:
             img = h["IMAGE"].data.astype(float)
             hdr = h["IMAGE"].header
-            flags = h["FLAGS"].data if "FLAGS" in h else None
-            var = h["VARIANCE"].data if "VARIANCE" in h else None
             wcs = WCS(hdr, naxis=2)
             wave = None
-            try:
-                x0, y0 = wcs.world_to_pixel(SkyCoord(ra * u.deg, dec * u.deg))
-                ww = WCS(hdr, fobj=h, key="W")
-                w, _ = ww.pixel_to_world(x0, y0)
-                wave = float(w.to(u.um).value)
-            except Exception:
-                pass
                 
         scale = fov * 60 / OUT_PX
         out = WCS(naxis=2)
@@ -154,14 +138,6 @@ def cutout():
         
         grid = map_coordinates(img, [py, px], order=1, cval=np.nan)
         
-        cx, cy = wcs.world_to_pixel(SkyCoord(ra * u.deg, dec * u.deg))
-        ci, cj = int(round(float(cy))), int(round(float(cx)))
-        sl = (slice(max(ci - 1, 0), ci + 2), slice(max(cj - 1, 0), cj + 2))
-        
-        flux = float(np.nanmedian(img[sl]))
-        ferr = float(np.sqrt(np.nanmedian(var[sl]))) if var is not None else None
-        flagged = float(np.mean(flags != 0)) if flags is not None else None
-        
         good = np.isfinite(grid)
         if not good.any():
             return err("Target not inside this image", 404)
@@ -173,13 +149,12 @@ def cutout():
         buf = io.BytesIO()
         Image.fromarray((norm[::-1] * 255).astype("uint8")).save(buf, "PNG")
         
-        clean = lambda v: v if v is None or np.isfinite(v) else None
         return jsonify({
             "png": base64.b64encode(buf.getvalue()).decode(), 
             "wavelength_um": wave,
-            "flux_mjysr": clean(flux), 
-            "flux_err": clean(ferr), 
-            "flagged_fraction": clean(flagged)
+            "flux_mjysr": float(np.nanmedian(img)), 
+            "flux_err": None, 
+            "flagged_fraction": None
         })
     except Exception as e:
         return err(f"Cutout failed: {e}", 502)

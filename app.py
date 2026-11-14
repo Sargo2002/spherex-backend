@@ -2,6 +2,12 @@
 import base64, io, os, sqlite3, time
 from urllib.parse import urlparse
 
+# ============================================================
+# Render-এ Proxy বাইপাস করার জন্য (502 Error সমাধান)
+# ============================================================
+os.environ['NO_PROXY'] = 'irsa.ipac.caltech.edu'
+os.environ['no_proxy'] = 'irsa.ipac.caltech.edu'
+
 import numpy as np
 import requests
 import astropy.units as u
@@ -85,8 +91,10 @@ def observations():
             try:
                 tab = Irsa.query_sia(pos=(coord, radius * u.deg), collection=COLLECTION)
             except Exception:
+                # Proxy বাইপাস করে সরাসরি রিকোয়েস্ট পাঠানো হচ্ছে
                 resp = requests.get("https://irsa.ipac.caltech.edu/SIA", timeout=60, params={
-                    "COLLECTION": COLLECTION, "POS": f"circle {ra} {dec} {radius}", "RESPONSEFORMAT": "votable"})
+                    "COLLECTION": COLLECTION, "POS": f"circle {ra} {dec} {radius}", "RESPONSEFORMAT": "votable"},
+                    proxies={"http": None, "https": None})
                 resp.raise_for_status()
                 tab = parse_single_table(io.BytesIO(resp.content)).to_table()
             rows = []
@@ -119,7 +127,9 @@ def cutout():
         ra, dec = float(request.args["ra"]), float(request.args["dec"])
         fov = float(request.args["fov"])
         size_deg = fov / 60 * 1.6
-        r = requests.get(url.split("?")[0], params={"center": f"{ra},{dec}", "size": f"{size_deg}"}, timeout=90)
+        # Proxy বাইপাস করে সরাসরি রিকোয়েস্ট পাঠানো হচ্ছে
+        r = requests.get(url.split("?")[0], params={"center": f"{ra},{dec}", "size": f"{size_deg}"}, timeout=90, 
+                         proxies={"http": None, "https": None})
         r.raise_for_status()
         with fits.open(io.BytesIO(r.content)) as h:
             img = h["IMAGE"].data.astype(float)

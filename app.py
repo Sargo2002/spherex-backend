@@ -2,6 +2,7 @@
 import base64, io, os, sqlite3, time
 from urllib.parse import urlparse
 
+# Render Proxy বন্ধ করার জন্য
 os.environ['NO_PROXY'] = 'irsa.ipac.caltech.edu'
 os.environ['no_proxy'] = 'irsa.ipac.caltech.edu'
 
@@ -16,16 +17,23 @@ from astropy.visualization import AsinhStretch, ZScaleInterval
 from astropy.wcs import WCS
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_compress import Compress
 from PIL import Image
 from scipy.ndimage import map_coordinates
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+Compress(app)  # ডেটা কম্প্রেস করে দ্রুত পাঠানোর জন্য
 
 DB = os.environ.get("DB_PATH", "spherex_live.db")
 COLLECTION = "spherex_qr3"  
 OUT_PX = 220                        
 _cache = {}                         
+
+# গ্লোবাল এরর হ্যান্ডলার (সার্ভার ক্র্যাশ রোধ করতে)
+@app.errorhandler(Exception)
+def handle_exception(e):
+    return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
 
 def db():
     conn = sqlite3.connect(DB)
@@ -64,7 +72,6 @@ def observations():
         array = request.args.get("array", "all")
         limit = min(int(request.args.get("limit", 12)), 40)
         
-        # সার্চ এরিয়া 0.3 ডিগ্রি করা হলো (আশেপাশের ছবি পাওয়ার জন্য)
         radius = max(fov / 60.0, 0.3) 
         
         params = {
@@ -73,8 +80,12 @@ def observations():
             "RESPONSEFORMAT": "votable"
         }
         
-        # টাইমআউট বাড়িয়ে 180 সেকেন্ড করা হলো
-        resp = requests.get("https://irsa.ipac.caltech.edu/SIA", params=params, timeout=180)
+        # রিট্রাই লজিক এবং বড় টাইমআউট
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        session.mount('https://', adapter)
+        
+        resp = session.get("https://irsa.ipac.caltech.edu/SIA", params=params, timeout=180)
         resp.raise_for_status()
         
         tab = parse_single_table(io.BytesIO(resp.content)).to_table()
@@ -115,7 +126,6 @@ def cutout():
         fov = float(request.args["fov"])
         size_deg = fov / 60 * 1.5 
         
-        # টাইমআউট বাড়িয়ে 300 সেকেন্ড (৫ মিনিট) করা হলো
         r = requests.get(url.split("?")[0], params={"center": f"{ra},{dec}", "size": f"{size_deg}"}, timeout=300)
         r.raise_for_status()
         
